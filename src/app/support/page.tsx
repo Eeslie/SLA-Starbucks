@@ -6,7 +6,10 @@ import { v4 as uuidv4 } from "uuid";
 import Image from "next/image";
 import Link from "next/link";
 import { detectPriority, priorityToDb } from "@/lib/priority";
-import { useTickets, useRules } from "@/lib/data";
+import { useTickets, useRules, useArticles } from "@/lib/data";
+import { DbArticle } from "@/lib/types";
+import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
 
 type Message = {
   id: string;
@@ -51,9 +54,15 @@ export default function SupportPage() {
   // Fetch tickets and rules for SLA display
   const { tickets, refreshTickets } = useTickets();
   const { rules } = useRules();
+  const { articles, submitFeedback } = useArticles();
   
   // Track current ticket for SLA display
   const [currentTicketId, setCurrentTicketId] = useState<string | null>(null);
+  
+  // Self-service portal state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedArticle, setSelectedArticle] = useState<DbArticle | null>(null);
 
   useEffect(() => {
     bottomRefInline.current?.scrollIntoView({ behavior: 'smooth' });
@@ -733,25 +742,260 @@ export default function SupportPage() {
         </div>
       )}
 
-      {/* FAQ MODAL */}
+      {/* SELF-SERVICE PORTAL MODAL */}
       {viewMode === 'faq' && (
           <div 
             className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-in fade-in"
-            onClick={() => setViewMode('home')}
+            onClick={() => {
+              setViewMode('home');
+              setSelectedArticle(null);
+              setSearchQuery("");
+              setSelectedCategory(null);
+            }}
           >
              <div 
-                className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden p-6 animate-in zoom-in-95 duration-200"
+                className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
                 onClick={e => e.stopPropagation()}
              >
-                <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-2xl font-bold text-gray-900">Frequently Asked Questions</h2>
-                    <button onClick={() => setViewMode('home')} className="p-2 hover:bg-gray-100 rounded-full">
-                        <X size={24} />
+                {/* Header */}
+                <div className="bg-gradient-to-r from-[var(--sb-green)] to-green-600 p-6 text-white">
+                  <div className="flex justify-between items-center mb-4">
+                    <div>
+                      <h2 className="text-2xl font-bold mb-1">Self-Service Portal</h2>
+                      <p className="text-green-100 text-sm">Find answers quickly • Reduce wait time</p>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setViewMode('home');
+                        setSelectedArticle(null);
+                        setSearchQuery("");
+                        setSelectedCategory(null);
+                      }} 
+                      className="p-2 hover:bg-white/20 rounded-full transition"
+                    >
+                      <X size={24} />
                     </button>
+                  </div>
+                  
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                    <input
+                      type="text"
+                      className="w-full bg-white/95 text-gray-900 rounded-lg pl-12 pr-4 py-3 focus:outline-none focus:ring-2 focus:ring-white/50"
+                      placeholder="Search for solutions, articles, or help topics..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
                 </div>
-                <div className="overflow-y-auto space-y-4 pr-2">
-                    <FaqItem q="How do I check my rewards balance?" a="You can check your balance in the Starbucks App or by logging into your account on our website." />
-                    <FaqItem q="Can I change my order after placing it?" a="Orders cannot be modified once placed. Please contact the store directly." />
+
+                {/* Categories Filter */}
+                <div className="px-6 py-4 bg-gray-50 border-b flex items-center gap-2 overflow-x-auto">
+                  <button
+                    onClick={() => setSelectedCategory(null)}
+                    className={`px-4 py-2 rounded-full text-sm font-semibold whitespace-nowrap transition ${
+                      selectedCategory === null
+                        ? 'bg-[var(--sb-green)] text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                    }`}
+                  >
+                    All Topics
+                  </button>
+                  {Array.from(new Set(articles.map(a => a.category))).map(category => (
+                    <button
+                      key={category}
+                      onClick={() => setSelectedCategory(category)}
+                      className={`px-4 py-2 rounded-full text-sm font-semibold whitespace-nowrap transition ${
+                        selectedCategory === category
+                          ? 'bg-[var(--sb-green)] text-white'
+                          : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                      }`}
+                    >
+                      {category}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Content Area */}
+                <div className="flex-1 overflow-hidden flex">
+                  {/* Articles List */}
+                  <div className={`w-full ${selectedArticle ? 'md:w-1/2' : ''} border-r border-gray-200 overflow-y-auto`}>
+                    {(() => {
+                      const filtered = articles.filter(a => {
+                        const matchesSearch = !searchQuery || 
+                          a.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          a.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          (a.tags && a.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase())));
+                        const matchesCategory = !selectedCategory || a.category === selectedCategory;
+                        return matchesSearch && matchesCategory;
+                      });
+
+                      if (filtered.length === 0) {
+                        return (
+                          <div className="p-12 text-center">
+                            <Search size={48} className="mx-auto text-gray-300 mb-4" />
+                            <h3 className="text-lg font-semibold text-gray-700 mb-2">No articles found</h3>
+                            <p className="text-gray-500 text-sm">Try adjusting your search or category filter</p>
+                            <button
+                              onClick={() => {
+                                setViewMode('home');
+                                setStep(0);
+                              }}
+                              className="mt-6 bg-[var(--sb-green)] text-white px-6 py-3 rounded-lg font-semibold hover:brightness-110 transition"
+                            >
+                              Create Support Ticket Instead
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      // Group articles by category for better organization
+                      const articlesByCategory = filtered.reduce((acc: Record<string, typeof filtered>, article) => {
+                        const cat = article.category || 'General';
+                        if (!acc[cat]) acc[cat] = [];
+                        acc[cat].push(article);
+                        return acc;
+                      }, {});
+
+                      const categories = Object.keys(articlesByCategory).sort();
+
+                      return (
+                        <div className="p-4 space-y-6">
+                          <div className="text-sm text-gray-500 mb-4">
+                            Found {filtered.length} {filtered.length === 1 ? 'article' : 'articles'}
+                          </div>
+                          
+                          {categories.map(category => (
+                            <div key={category} className="space-y-3">
+                              <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200 pb-2">
+                                {category}
+                              </h3>
+                              {articlesByCategory[category].map(article => (
+                                <div
+                                  key={article.id}
+                                  onClick={() => setSelectedArticle(article)}
+                                  className={`p-4 rounded-lg border cursor-pointer transition-all ${
+                                    selectedArticle?.id === article.id
+                                      ? 'border-[var(--sb-green)] bg-green-50 shadow-md'
+                                      : 'border-gray-200 hover:border-[var(--sb-green)]/50 hover:shadow-sm'
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between mb-2">
+                                    <h3 className="font-bold text-gray-900 flex-1">{article.title}</h3>
+                                    <span className="ml-2 px-2 py-1 bg-blue-50 text-blue-700 text-xs font-semibold rounded">
+                                      {article.category}
+                                    </span>
+                                  </div>
+                                  <p className="text-sm text-gray-600 line-clamp-2 mb-3">
+                                    {article.content.replace(/[#*\[\]]/g, '').substring(0, 150)}...
+                                  </p>
+                                  <div className="flex items-center justify-between text-xs text-gray-500">
+                                    <div className="flex items-center gap-4">
+                                      <span className="flex items-center gap-1">
+                                        <Star size={12} className="text-yellow-500 fill-yellow-500" />
+                                        {article.helpfulness_score || 0} helpful
+                                      </span>
+                                    </div>
+                                    <span>Read more →</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Article Detail View */}
+                  {selectedArticle && (
+                    <div className="hidden md:block w-1/2 overflow-y-auto bg-gray-50">
+                      <div className="p-6">
+                        <button
+                          onClick={() => setSelectedArticle(null)}
+                          className="mb-4 text-sm text-gray-600 hover:text-[var(--sb-green)] flex items-center gap-2"
+                        >
+                          ← Back to articles
+                        </button>
+                        <div className="bg-white rounded-lg p-6 shadow-sm">
+                          <div className="flex items-start justify-between mb-4">
+                            <div>
+                              <span className="inline-block px-3 py-1 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full mb-2">
+                                {selectedArticle.category}
+                              </span>
+                              <h2 className="text-2xl font-bold text-gray-900 mb-2">{selectedArticle.title}</h2>
+                            </div>
+                          </div>
+                          <div className="prose prose-sm max-w-none mb-6 text-gray-700 prose-p:my-4 prose-headings:my-6 prose-ul:my-4 prose-ol:my-4 prose-li:my-2">
+                            <ReactMarkdown 
+                              remarkPlugins={[remarkBreaks]}
+                              components={{
+                                p: ({node, ...props}) => <p className="mb-4" {...props} />,
+                                h1: ({node, ...props}) => <h1 className="mb-6 mt-8 text-2xl font-bold" {...props} />,
+                                h2: ({node, ...props}) => <h2 className="mb-4 mt-6 text-xl font-bold" {...props} />,
+                                h3: ({node, ...props}) => <h3 className="mb-3 mt-5 text-lg font-semibold" {...props} />,
+                                ul: ({node, ...props}) => <ul className="mb-4 ml-6 space-y-2 list-disc" {...props} />,
+                                ol: ({node, ...props}) => <ol className="mb-4 ml-6 space-y-2 list-decimal" {...props} />,
+                                li: ({node, ...props}) => <li className="mb-1" {...props} />,
+                                hr: ({node, ...props}) => <hr className="my-6 border-gray-300" {...props} />,
+                                blockquote: ({node, ...props}) => <blockquote className="my-4 pl-4 border-l-4 border-gray-300 italic" {...props} />,
+                              }}
+                            >
+                              {selectedArticle.content}
+                            </ReactMarkdown>
+                          </div>
+                          
+                          {/* Helpfulness Feedback */}
+                          <div className="border-t border-gray-200 pt-4 mt-6">
+                            {(selectedArticle as any).userFeedback ? (
+                              <div className="text-center py-3 bg-green-50 rounded-lg border border-green-200">
+                                <p className="text-sm font-semibold text-green-700 mb-1">✓ Thank you for your feedback!</p>
+                                <p className="text-xs text-green-600">
+                                  Your feedback helps us improve our articles.
+                                </p>
+                              </div>
+                            ) : (
+                              <>
+                                <p className="text-sm font-semibold text-gray-700 mb-3">Was this article helpful?</p>
+                                <div className="flex gap-3">
+                                  <button
+                                    onClick={() => submitFeedback(selectedArticle.id, true)}
+                                    className="flex-1 px-4 py-2 rounded-lg font-semibold transition bg-green-50 text-green-700 hover:bg-green-100 border border-green-200"
+                                  >
+                                    ✓ Yes, helpful
+                                  </button>
+                                  <button
+                                    onClick={() => submitFeedback(selectedArticle.id, false)}
+                                    className="flex-1 px-4 py-2 rounded-lg font-semibold transition bg-red-50 text-red-700 hover:bg-red-100 border border-red-200"
+                                  >
+                                    ✗ Not helpful
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          {/* Call to Action */}
+                          <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
+                            <p className="text-sm text-gray-700 mb-3">
+                              Still need help? Our support team is ready to assist you.
+                            </p>
+                            <button
+                              onClick={() => {
+                                setViewMode('home');
+                                setSelectedArticle(null);
+                                setStep(0);
+                              }}
+                              className="w-full bg-[var(--sb-green)] text-white px-4 py-2 rounded-lg font-semibold hover:brightness-110 transition"
+                            >
+                              Create Support Ticket
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
              </div>
           </div>

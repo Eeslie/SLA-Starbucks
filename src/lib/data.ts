@@ -805,23 +805,130 @@ export function useDashboardStats() {
   return stats;
 }
 
-export function useArticles() {
+export function useArticles(showAll: boolean = false) {
   const [articles, setArticles] = useState<DbArticle[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchArticles = useCallback(async () => {
     const client = supabase;
-    if (!client) return;
-    const { data } = await client.from('articles').select('*').order('title');
-    if (data) setArticles(data as DbArticle[]);
-    setLoading(false);
+    if (!client) {
+      setLoading(false);
+      return;
+    }
+    
+    try {
+      // For admin pages, show all articles. For customer portal, only show Published
+      let query = client.from('articles').select('*');
+      
+      if (!showAll) {
+        query = query.eq('status', 'Published');
+      }
+      
+      const { data } = await query
+        .order('helpfulness_score', { ascending: false })
+        .order('updated_at', { ascending: false });
+      
+      if (data) {
+        // Load helpfulness feedback from localStorage (if DB doesn't track per-user)
+        const storedFeedback = typeof window !== 'undefined' 
+          ? localStorage.getItem('starbucks_article_feedback') 
+          : null;
+        const feedbackMap: Record<string, 'helpful' | 'not_helpful'> = storedFeedback 
+          ? JSON.parse(storedFeedback) 
+          : {};
+        
+        // Merge feedback into articles
+        const articlesWithFeedback = (data as DbArticle[]).map(article => ({
+          ...article,
+          userFeedback: feedbackMap[article.id] || null
+        }));
+        
+        setArticles(articlesWithFeedback as DbArticle[]);
+      }
+      setLoading(false);
+    } catch (err) {
+      console.error('Error fetching articles:', err);
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     fetchArticles();
   }, [fetchArticles]);
 
-  return { articles, loading, refresh: fetchArticles };
+  const submitFeedback = useCallback(async (articleId: string, isHelpful: boolean) => {
+    if (typeof window === 'undefined') return;
+    
+    try {
+      const storedFeedback = localStorage.getItem('starbucks_article_feedback');
+      const feedbackMap: Record<string, 'helpful' | 'not_helpful'> = storedFeedback 
+        ? JSON.parse(storedFeedback) 
+        : {};
+      
+      feedbackMap[articleId] = isHelpful ? 'helpful' : 'not_helpful';
+      localStorage.setItem('starbucks_article_feedback', JSON.stringify(feedbackMap));
+      
+      // Update local state
+      setArticles(prev => prev.map(a => 
+        a.id === articleId 
+          ? { ...a, userFeedback: feedbackMap[articleId] } 
+          : a
+      ));
+      
+      // Update helpfulness score in database (if possible)
+      const client = supabase;
+      if (client) {
+        const article = articles.find(a => a.id === articleId);
+        if (article) {
+          const newScore = isHelpful 
+            ? article.helpfulness_score + 1 
+            : Math.max(0, article.helpfulness_score - 1);
+          
+          // Update score in database (non-blocking)
+          try {
+            await client
+              .from('articles')
+              .update({ helpfulness_score: newScore })
+              .eq('id', articleId);
+            
+            // Refresh to get updated scores
+            fetchArticles();
+          } catch (err: any) {
+            console.error('Error updating helpfulness score:', err);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error submitting feedback:', err);
+    }
+  }, [articles, fetchArticles]);
+
+  const deleteArticle = useCallback(async (articleId: string) => {
+    const client = supabase;
+    if (!client) {
+      throw new Error('Database connection not available');
+    }
+    
+    try {
+      const { error } = await client
+        .from('articles')
+        .delete()
+        .eq('id', articleId);
+      
+      if (error) {
+        console.error('Error deleting article:', error);
+        throw error;
+      }
+      
+      // Remove from local state
+      setArticles(prev => prev.filter(a => a.id !== articleId));
+    } catch (err: any) {
+      console.error('Failed to delete article:', err);
+      throw err;
+    }
+  }, []);
+
+  return { articles, loading, refresh: fetchArticles, submitFeedback, deleteArticle };
 }
 
 import { auth } from "@/lib/auth";
